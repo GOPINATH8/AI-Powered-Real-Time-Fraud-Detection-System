@@ -39,14 +39,32 @@ try:
 except Exception:
     encoder = None
 
-# Initialize database connection
-if not DATABASE_URL:
-    raise RuntimeError("DATABASE_URL is not set. Please set it in app/.env or environment.")
+# Initialize database connection lazily at startup
+conn = None
 
-try:
-    conn = psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
-except Exception as e:
-    raise RuntimeError(f"Failed to connect to database: {e}")
+def create_db_connection(url: str):
+    if not url:
+        raise RuntimeError(
+            "DATABASE_URL is not set. "
+            "Please configure it in app/.env or your environment before starting the app."
+        )
+
+    try:
+        return psycopg2.connect(url, cursor_factory=RealDictCursor)
+    except psycopg2.OperationalError as e:
+        raise RuntimeError(
+            "Failed to connect to the PostgreSQL database. "
+            "Verify PostgreSQL is running, the host/port are correct, and the DATABASE_URL credentials are valid. "
+            f"Configured DATABASE_URL: {url}\n"
+            f"Original error: {e}"
+        )
+    except Exception as e:
+        raise RuntimeError(f"Failed to connect to database: {e}")
+
+@app.on_event("startup")
+async def startup_event():
+    global conn
+    conn = create_db_connection(DATABASE_URL)
 
 # Initialize Redis client if URL provided
 redis_client = None
@@ -156,6 +174,7 @@ async def score_transaction(transaction: Transaction):
         # Get anomaly score and prediction
         anomaly_score = float(-iso_forest.decision_function(features)[0])
         is_fraud = bool(iso_forest.predict(features)[0] == -1)
+        prediction = "Fraudulent" if is_fraud else "Legitimate"
 
         # Save results to the database
         with conn.cursor() as cur:
@@ -192,7 +211,7 @@ async def score_transaction(transaction: Transaction):
             )
         conn.commit()
 
-        return {"anomaly_score": anomaly_score, "is_fraud": is_fraud}
+        return {"fraud_score": round(anomaly_score, 2), "prediction": prediction}
     except Exception as e:
         conn.rollback()
         raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
