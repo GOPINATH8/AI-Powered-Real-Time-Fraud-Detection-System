@@ -10,8 +10,20 @@ import os
 import matplotlib.pyplot as plt
 
 # Paths
-DATA_PATH = '/Users/mac/Desktop/FRAUD DETECTION/bank_transactions_featured.csv'
-OUTPUT_DIR = '/Users/mac/Desktop/FRAUD DETECTION/app/model/artifacts'
+SCRIPT_DIR = os.path.abspath(os.path.dirname(__file__))
+possible_roots = [
+    os.path.abspath(os.path.join(SCRIPT_DIR, '..')),
+    os.path.abspath(os.path.join(SCRIPT_DIR, '..', '..')),
+]
+DATA_PATH = None
+for root in possible_roots:
+    candidate = os.path.join(root, 'bank_transactions_featured.csv')
+    if os.path.exists(candidate):
+        DATA_PATH = candidate
+        break
+if DATA_PATH is None:
+    raise FileNotFoundError('Could not find bank_transactions_featured.csv in repo root or parent locations.')
+OUTPUT_DIR = os.path.abspath(os.path.join(SCRIPT_DIR, 'artifacts'))
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 # Load Dataset
