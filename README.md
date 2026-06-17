@@ -28,7 +28,7 @@ What I built:
 * Used environment variables and .env files for secure, configurable deployments.
 * Ensured full system alignment with automated integration tests.
 
-Tech Stack: Python, FastAPI, scikit-learn, PostgreSQL, React, Axios, Docker, pgAdmin
+Tech Stack:Python, FastAPI, scikit-learn, PostgreSQL, React, Axios, Docker, pgAdmin
 
 Key Skills Demonstrated:
 * End-to-end ML system design
@@ -101,7 +101,7 @@ pip install -r ../requirements.txt
 ### 5. **Start the Backend**
 
 ```bash
-uvicorn main:app --reload
+uvicorn main:app --reload`
 ```
 
 The API will be available at [http://127.0.0.1:8000](http://127.0.0.1:8000).
