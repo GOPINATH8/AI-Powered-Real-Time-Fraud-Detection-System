@@ -1,6 +1,7 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+from typing import Optional, Union
 import numpy as np
 import joblib
 from dotenv import load_dotenv
@@ -14,8 +15,20 @@ load_dotenv()
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 REDIS_URL = os.getenv("REDIS_URL")
-MODEL_PATH = os.getenv("MODEL_PATH", "app/model/iso_forest_model.pkl")
-ENCODER_PATH = os.getenv("ENCODER_PATH", "app/model/onehot_encoder.pkl")
+
+APP_DIR = os.path.abspath(os.path.dirname(__file__))
+DEFAULT_MODEL_PATH = os.path.join(APP_DIR, "iso_forest_model.pkl")
+ALTERNATE_MODEL_PATH = os.path.join(APP_DIR, "model", "artifacts", "isolation_forest.pkl")
+DEFAULT_ENCODER_PATH = os.path.join(APP_DIR, "onehot_encoder.pkl")
+ALTERNATE_ENCODER_PATH = os.path.join(APP_DIR, "model", "artifacts", "onehot_encoder.pkl")
+
+MODEL_PATH = os.getenv("MODEL_PATH", DEFAULT_MODEL_PATH)
+if not os.path.exists(MODEL_PATH) and os.path.exists(ALTERNATE_MODEL_PATH):
+    MODEL_PATH = ALTERNATE_MODEL_PATH
+
+ENCODER_PATH = os.getenv("ENCODER_PATH", DEFAULT_ENCODER_PATH)
+if not os.path.exists(ENCODER_PATH) and os.path.exists(ALTERNATE_ENCODER_PATH):
+    ENCODER_PATH = ALTERNATE_ENCODER_PATH
 
 # Initialize FastAPI app
 app = FastAPI()
@@ -61,6 +74,42 @@ def create_db_connection(url: str):
     except Exception as e:
         raise RuntimeError(f"Failed to connect to database: {e}")
 
+
+def normalize_bool_flag(value: Optional[Union[bool, int, str]]) -> int:
+    if value is None:
+        return 0
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int):
+        return int(value != 0)
+    normalized = str(value).strip().lower()
+    if normalized in {"true", "t", "yes", "y", "1"}:
+        return 1
+    if normalized in {"false", "f", "no", "n", "0"}:
+        return 0
+    try:
+        return int(float(normalized))
+    except ValueError:
+        raise ValueError(f"Could not parse boolean flag value: {value}")
+
+
+def compute_is_large_transaction(amount: float) -> int:
+    return int(amount >= 800.0)
+
+
+def compute_log_transaction_amount(amount: float) -> float:
+    return float(np.log1p(max(float(amount), 0.0)))
+
+
+def compute_odd_hour_transaction(hour: int) -> int:
+    return int(hour < 6 or hour > 22)
+
+
+def compute_is_unusual_location(location: str, user_primary_location: str) -> int:
+    if location is None or user_primary_location is None:
+        return 0
+    return int(str(location).strip().lower() != str(user_primary_location).strip().lower())
+
 @app.on_event("startup")
 async def startup_event():
     global conn
@@ -93,11 +142,23 @@ class Transaction(BaseModel):
     Channel: str
     CustomerOccupation: str
     user_primary_location: str
-    is_unusual_location: str
+    is_unusual_location: Optional[Union[bool, int, str]] = None
+    is_large_transaction: Optional[int] = None
+    log_transaction_amount: Optional[float] = None
+    odd_hour_transaction: Optional[int] = None
 
 
 @app.post("/transactions/ingest")
 async def ingest_transaction(transaction: Transaction):
+    is_unusual_location = transaction.is_unusual_location
+    if is_unusual_location is None:
+        is_unusual_location = compute_is_unusual_location(
+            transaction.Location,
+            transaction.user_primary_location,
+        )
+    else:
+        is_unusual_location = normalize_bool_flag(is_unusual_location)
+
     try:
         with conn.cursor() as cur:
             cur.execute(
@@ -126,7 +187,7 @@ async def ingest_transaction(transaction: Transaction):
                     int(transaction.LoginAttempts),
                     float(transaction.AccountBalance),
                     str(transaction.user_primary_location),
-                    str(transaction.is_unusual_location),
+                    str(int(is_unusual_location)),
                 ),
             )
         conn.commit()
@@ -142,18 +203,48 @@ async def score_transaction(transaction: Transaction):
         raise HTTPException(status_code=500, detail="Model not loaded; check MODEL_PATH")
 
     try:
-        # Prepare numeric features
+        # Prepare derived numeric features
+        is_unusual_location = transaction.is_unusual_location
+        if is_unusual_location is None:
+            is_unusual_location = compute_is_unusual_location(
+                transaction.Location,
+                transaction.user_primary_location,
+            )
+        else:
+            is_unusual_location = normalize_bool_flag(is_unusual_location)
+
+        is_large_transaction = (
+            transaction.is_large_transaction
+            if transaction.is_large_transaction is not None
+            else compute_is_large_transaction(transaction.TransactionAmount)
+        )
+        log_transaction_amount = (
+            transaction.log_transaction_amount
+            if transaction.log_transaction_amount is not None
+            else compute_log_transaction_amount(transaction.TransactionAmount)
+        )
+        odd_hour_transaction = (
+            transaction.odd_hour_transaction
+            if transaction.odd_hour_transaction is not None
+            else compute_odd_hour_transaction(transaction.transaction_hour)
+        )
+
+        # Prepare numeric features in the exact order used during training
         numeric_features = np.array([
             transaction.TransactionAmount,
             transaction.CustomerAge,
             transaction.TransactionDuration,
             transaction.LoginAttempts,
             transaction.AccountBalance,
+            is_large_transaction,
+            log_transaction_amount,
+            transaction.transaction_hour,
+            transaction.transaction_day_of_week,
+            odd_hour_transaction,
             transaction.user_transaction_count,
             transaction.user_avg_transaction_amount,
             transaction.deviation_from_user_avg,
-            transaction.transaction_hour,
-            transaction.transaction_day_of_week,
+            is_unusual_location,
         ]).reshape(1, -1)
 
         # Prepare categorical features (if encoder available)
@@ -164,12 +255,20 @@ async def score_transaction(transaction: Transaction):
                 transaction.Channel,
                 transaction.CustomerOccupation,
                 transaction.user_primary_location,
-                transaction.is_unusual_location,
             ]])
         else:
-            categorical_features = np.zeros((1, 0))
+            categorical_features = np.zeros((1, 0), dtype=np.float32)
 
         features = np.hstack((numeric_features, categorical_features)).astype(np.float32)
+
+        if hasattr(iso_forest, "n_features_in_") and features.shape[1] != iso_forest.n_features_in_:
+            raise HTTPException(
+                status_code=500,
+                detail=(
+                    f"Model expects {iso_forest.n_features_in_} features, but received {features.shape[1]}. "
+                    "Check derived feature generation and the encoder input order."
+                ),
+            )
 
         # Get anomaly score and prediction
         anomaly_score = float(-iso_forest.decision_function(features)[0])
@@ -206,7 +305,7 @@ async def score_transaction(transaction: Transaction):
                     int(transaction.LoginAttempts),
                     float(transaction.AccountBalance),
                     str(transaction.user_primary_location),
-                    str(transaction.is_unusual_location),
+                    str(int(is_unusual_location)),
                 ),
             )
         conn.commit()
