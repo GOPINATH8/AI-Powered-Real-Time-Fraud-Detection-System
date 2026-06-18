@@ -15,26 +15,10 @@ const Dashboard = () => {
       }
     };
 
-    const fetchAlerts = async () => {
-      // You can replace this with a real API call if you implement alerts in backend
-      setAlerts(
-        transactions
-          .filter((tx) => tx.is_fraud === true)
-          .map((tx, idx) => ({
-            id: `alert_${idx}`,
-            transaction_id: tx.id || tx.transaction_id || idx,
-            type: "HIGH_RISK",
-            time: tx.event_time,
-          }))
-      );
-    };
-
     fetchTransactions();
-    // fetchAlerts will run after transactions are loaded
   }, []);
 
   useEffect(() => {
-    // Update alerts when transactions change
     setAlerts(
       transactions
         .filter((tx) => tx.is_fraud === true)
@@ -49,43 +33,69 @@ const Dashboard = () => {
 
   return (
     <div className="dashboard">
-      <h1>Fraud Detection Dashboard</h1>
-      <h2>Recent Transactions</h2>
-      <table>
-        <thead>
-          <tr>
-            <th>ID</th>
-            <th>Account ID</th>
-            <th>Amount</th>
-            <th>Location</th>
-            <th>Time</th>
-            <th>Fraud?</th>
-            <th>Anomaly Score</th>
-          </tr>
-        </thead>
-        <tbody>
-          {transactions.map((tx) => (
-            <tr key={tx.id || tx.transaction_id}>
-              <td>{tx.id || tx.transaction_id}</td>
-              <td>{tx.account_id}</td>
-              <td>{tx.amount}</td>
-              <td>{tx.location}</td>
-              <td>{new Date(tx.event_time).toLocaleString()}</td>
-              <td>{tx.is_fraud ? "Yes" : "No"}</td>
-              <td>{tx.fraud_probability !== undefined ? tx.fraud_probability.toFixed(4) : ""}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+      <div className="panel-header">
+        <div>
+          <h1>Fraud Detection Dashboard</h1>
+          <p>Track suspicious activity and review recent transaction history.</p>
+        </div>
+      </div>
 
-      <h2>Alerts</h2>
-      <ul>
-        {alerts.map((alert) => (
-          <li key={alert.id}>
-            Alert: {alert.type} for Transaction {alert.transaction_id} at {new Date(alert.time).toLocaleString()}
-          </li>
-        ))}
-      </ul>
+      <div className="table-wrapper">
+        <table className="transaction-table">
+          <thead>
+            <tr>
+              <th>ID</th>
+              <th>Account</th>
+              <th>Amount</th>
+              <th>Location</th>
+              <th>Time</th>
+              <th>Status</th>
+              <th>Anomaly</th>
+            </tr>
+          </thead>
+          <tbody>
+            {transactions.length === 0 ? (
+              <tr>
+                <td colSpan="7" className="empty-state">
+                  No transactions available.
+                </td>
+              </tr>
+            ) : (
+              transactions.map((tx, idx) => (
+                <tr key={tx.id || tx.transaction_id || idx}>
+                  <td>{tx.id || tx.transaction_id || "—"}</td>
+                  <td>{tx.account_id || "—"}</td>
+                  <td>${tx.amount?.toFixed(2) ?? "—"}</td>
+                  <td>{tx.location || "—"}</td>
+                  <td>{tx.event_time ? new Date(tx.event_time).toLocaleString() : "—"}</td>
+                  <td>
+                    <span className={`status-badge ${tx.is_fraud ? "fraud" : "safe"}`}>
+                      {tx.is_fraud ? "Fraud" : "Clear"}
+                    </span>
+                  </td>
+                  <td>{tx.fraud_probability !== undefined ? tx.fraud_probability.toFixed(4) : "—"}</td>
+                </tr>
+              ))
+            )}
+          </tbody>
+        </table>
+      </div>
+
+      <div className="alerts-panel">
+        <h2>Alerts</h2>
+        {alerts.length === 0 ? (
+          <p className="empty-state">No active fraud alerts.</p>
+        ) : (
+          <ul className="alert-list">
+            {alerts.map((alert) => (
+              <li key={alert.id}>
+                <strong>{alert.type}</strong> detected for transaction {alert.transaction_id} at{' '}
+                {alert.time ? new Date(alert.time).toLocaleString() : "unknown time"}
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
     </div>
   );
 };
